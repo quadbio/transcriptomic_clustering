@@ -33,6 +33,7 @@ def merge_clusters(
         thresholds: Dict[str, Any] = DEFAULT_THRESHOLDS,
         k: Optional[int] = 2,
         de_method: Optional[str] = 'ebayes',
+        de_kwargs: Optional[Dict[str, Any]] = None,
         n_markers: Optional[int] = 20,
         chunk_size: Optional[int] = None,
         return_markers_df: Optional[bool] = False,
@@ -124,15 +125,18 @@ def merge_clusters(
     # Merge remaining clusters by differential expression
     logger.info("Merging Clusters by DE")
     tic = time.perf_counter()
-    merge_clusters_by_de(cluster_assignments_merge,
-                         cl_means,
-                         cl_vars,
-                         present_cl_means,
-                         cl_means_reduced,
-                         thresholds,
-                         k,
-                         de_method,
-                         )
+    merge_clusters_by_de(
+        adata_norm,
+        cluster_assignments_merge,
+        cl_means,
+        cl_vars,
+        present_cl_means,
+        cl_means_reduced,
+        thresholds,
+        k,
+        de_method,
+        de_kwargs
+    )
     logger.info(f'Completed Merging Clusters by DE')
     toc = time.perf_counter()
     logger.info(f'Merging DE Elapsed Time: {toc - tic}')
@@ -144,6 +148,7 @@ def merge_clusters(
         logger.info('Starting Marker Selection')
         tic = time.perf_counter()
         markers = select_marker_genes(
+            adata_norm,
             cluster_assignments=cluster_assignments_merge,
             cluster_means=cl_means,
             cluster_variances=cl_vars,
@@ -151,6 +156,7 @@ def merge_clusters(
             thresholds=thresholds,
             n_markers=n_markers,
             de_method=de_method,
+            de_kwargs=de_kwargs,
             return_markers_df=return_markers_df,
             n_jobs=n_jobs
         )
@@ -415,6 +421,7 @@ def merge_small_clusters(
 
 
 def merge_clusters_by_de(
+    adata_norm: ad.AnnData,
     cluster_assignments: Dict[Any, List],
     cluster_means: pd.DataFrame,
     cluster_variances: pd.DataFrame,
@@ -422,7 +429,8 @@ def merge_clusters_by_de(
     cluster_means_rd: pd.DataFrame,
     thresholds: Dict[str, Any],
     k: Optional[int] = 2,
-    de_method: Optional[Literal['ebayes', 'chisq']] = 'ebayes',
+    de_method: Optional[Literal['ebayes', 'chisq', 'pseudobulk']] = 'ebayes',
+    de_kwargs: Optional[Dict[str, Any]] = None,
 ):
     """
     Merge clusters by the calculated gene differential expression score
@@ -491,6 +499,17 @@ def merge_clusters_by_de(
                 present_cluster_means,
                 cl_size,
                 thresholds,
+            )
+        elif de_method == 'pseudobulk':
+            scores = tc.de_pairs_pseudobulk(
+                adata_norm,
+                cluster_assignments,
+                neighbor_pairs,
+                cluster_means,
+                present_cluster_means,
+                cl_size,
+                thresholds,
+                de_kwargs.pseudobulk
             )
         else:
             raise ValueError(f'Unknown de_method {de_method}, must be one of [chisq, ebayes]')

@@ -26,10 +26,17 @@ class OnestepKwargs:
     cluster_louvain_kwargs: Dict = field(default_factory = lambda: ({}))
     merge_clusters_kwargs: Dict = field(default_factory = lambda: ({}))
 
+@dataclass
+class DEKwargs:
+    """Dataclass for kwargs in differential expression"""
+    pseudobulk: Dict = field(default_factory = lambda: ({}))
+
+
 
 def onestep_clust(
         norm_adata: sc.AnnData,
         onestep_kwargs: OnestepKwargs=OnestepKwargs(),
+        de_kwargs: DEKwargs=DEKwargs(),
         random_seed: Optional[int]=None) -> List[np.ndarray]:
     """
     Performs an entire clustering step
@@ -180,7 +187,8 @@ def onestep_clust(
         adata_reduced=projected_adata,
         cluster_assignments=obs_by_cluster,
         cluster_by_obs=cluster_by_obs,
-        **onestep_kwargs.merge_clusters_kwargs
+        **onestep_kwargs.merge_clusters_kwargs,
+        de_kwargs=de_kwargs
     )
     
     logger.info('Completed Cluster Merging')

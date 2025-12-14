@@ -93,6 +93,7 @@ def final_merge(
         n_jobs: Optional[int] = 1,
         return_markers_df: Optional[bool] = False,
         final_merge_kwargs: FinalMergeKwargs = FinalMergeKwargs(),
+        de_kwargs: Optional[Dict[str, Any]] = None
 ) -> Tuple[List[List[int]], Union[pd.DataFrame, set]]:
     """
     Runs a final merging step on cluster assignment results
@@ -210,7 +211,8 @@ def final_merge(
         cluster_by_obs=cluster_by_obs,
         return_markers_df=return_markers_df,
         n_jobs=n_jobs,
-        **final_merge_kwargs.merge_clusters_kwargs
+        **final_merge_kwargs.merge_clusters_kwargs,
+        de_kwargs=de_kwargs
     )
     logger.info(f'Completed Merging')
     toc = time.perf_counter()

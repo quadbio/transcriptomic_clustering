@@ -13,13 +13,15 @@ logger = logging.getLogger(__name__)
 
 
 def select_marker_genes(
+        adata_norm: ad.AnnData,
         cluster_assignments: Dict[Any, List],
         cluster_means: pd.DataFrame,
         cluster_variances: pd.DataFrame,
         present_cluster_means: pd.DataFrame,
         thresholds: Dict[str, Any],
         n_markers: int = 20,
-        de_method: Optional[Literal['ebayes', 'chisq']] = 'ebayes',
+        de_method: Optional[Literal['ebayes', 'chisq', 'pseudobulk']] = 'ebayes',
+        de_kwargs: Optional[Dict[str, Any]] = None,
         return_markers_df: Optional[bool] = False,
         n_jobs: Optional[int] = 1
 ) -> Union[pd.DataFrame, set]:
@@ -77,6 +79,17 @@ def select_marker_genes(
             cl_size,
             thresholds,
         )
+    elif de_method == 'pseudobulk':
+        de_df = tc.de_pairs_pseudobulk(
+            adata_norm,
+            cluster_assignments,
+            neighbor_pairs,
+            cluster_means,
+            present_cluster_means,
+            cl_size,
+            thresholds,
+            de_kwargs.pseudobulk
+            )
     else:
         raise ValueError(f'Unknown de_method {de_method}, must be one of [chisq, ebayes]')
     

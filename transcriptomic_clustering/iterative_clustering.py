@@ -13,7 +13,7 @@ import scipy as scp
 import anndata as ad
 import h5py
 import transcriptomic_clustering as tc
-from transcriptomic_clustering.onestep_clustering import onestep_clust, OnestepKwargs
+from transcriptomic_clustering.onestep_clustering import onestep_clust, OnestepKwargs, DEKwargs
 from transcriptomic_clustering.iter_writer import AnnDataIterWriter
 
 
@@ -144,6 +144,7 @@ def iter_clust(
         tmp_dir: Path,
         min_samples: int=4,
         onestep_kwargs: OnestepKwargs=OnestepKwargs(),
+        de_kwargs: DEKwargs=DEKwargs(),
         random_seed: Optional[int]=None,
 ) -> List[np.ndarray]:
     """
