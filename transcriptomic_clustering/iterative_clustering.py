@@ -166,7 +166,11 @@ def iter_clust(
     """
     tic = time.perf_counter()
     logger.info('----------Starting Onestep_clust----------')
-    clusters, markers = onestep_clust(norm_adata, onestep_kwargs=onestep_kwargs, random_seed=random_seed)
+    clusters, markers = onestep_clust(
+        norm_adata,
+        onestep_kwargs=onestep_kwargs, 
+        de_kwargs=de_kwargs,
+        random_seed=random_seed)
     logger.info('----------Finished Onestep_clust----------')
     toc = time.perf_counter()
     logger.info(f'Onestep Clustering Elapsed Time: {toc - tic}')
@@ -195,6 +199,7 @@ def iter_clust(
                 cluster_adata,
                 min_samples=min_samples,
                 onestep_kwargs=onestep_kwargs,
+                de_kwargs=de_kwargs,
                 random_seed=random_seed,
                 tmp_dir=tmp_dir
             )

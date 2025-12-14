@@ -31,8 +31,6 @@ class DEKwargs:
     """Dataclass for kwargs in differential expression"""
     pseudobulk: Dict = field(default_factory = lambda: ({}))
 
-
-
 def onestep_clust(
         norm_adata: sc.AnnData,
         onestep_kwargs: OnestepKwargs=OnestepKwargs(),

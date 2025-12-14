@@ -18,53 +18,104 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class BulkDE:
+class BulkDE: 
     """
     Class to handle selection of conditions, identification of replicates/batches,
-    assessment of batch inclusion, and (later) generation of pseudoreplicates for DE analysis.
+    assessment of batch inclusion, and generation of pseudoreplicates for DE analysis.
     """
 
     def __init__(
         self,
-        adata: ad.AnnData,
+        adata:  ad.AnnData,
         group_key: str,
-        query: str,
+        query:  str,
         reference: Union[str, List[str]],
         group_names: Tuple[str, str] = ("query", "reference"),
         comparison_key_added: str = "_comparison_group",
-        replicate_key: Optional[str] = None,
-        pb_replicate_key: str = "_psbulk_replicate",
-        replicate_min_cells: int = 50,
-        replicate_min_fraction: float = 0.3,
+        replicate_key:  Optional[str] = None,
         batch_key: Optional[str] = None,
+        sample_min_cells: int = 50,
+        sample_min_fraction: float = 0.3,
+        min_coverage: float = 0.8,
         min_bridging_batches: int = 2,
-        pb_batch_key: str = "_psbulk_batch",
 
         # Decoupler arguments
         layer: str = 'counts',
         mode: str = 'sum',
 
         # Pseudoreplicate arguments
-        min_replicates: int = 5,
+        min_samples:  int = 5,
         resampling_fraction: float = 0.6,
         n_repetitions: int = 10,
         min_list_overlap: float = 0.8,
         
         # DE arguments
-        alpha: float = 0.05,
+        alpha:  float = 0.05,
         cooks: bool = True,
         independent_filter: bool = True,
         fit_type: str = "mean",
  
         # Other arguments
-        n_cpus: int = 1,
+        n_cpus:  int = 1,
         seed: int = 42,
-        verbose: bool = False,
+        verbose: bool = True,
     ):
         """
-        Initialize the helper with AnnData and column keys.
+        Initialize the BulkDE analysis. 
+        
+        Parameters
+        ----------
+        adata :  AnnData
+            Annotated data matrix
+        group_key : str
+            Column in adata.obs containing group labels
+        query : str
+            Value in group_key for the query group
+        reference : str or list of str
+            Value(s) in group_key for reference group, or "rest"
+        group_names : tuple
+            Names for (query, reference) in output
+        comparison_key_added :  str
+            Column name to add for comparison groups
+        replicate_key : str, optional
+            Column for biological replicates
+        batch_key : str, optional
+            Column for batch information
+        sample_min_cells : int
+            Minimum cells for a sample to be valid
+        sample_min_fraction :  float
+            Minimum fraction of condition cells for a sample to be valid
+        min_coverage : float
+            Minimum fraction of cells that must be covered by valid samples
+        min_bridging_batches : int
+            Minimum batches present in both conditions to include batch in design
+        layer : str
+            Layer to use for pseudobulk
+        mode : str
+            Aggregation mode for pseudobulk
+        min_samples : int
+            Minimum samples per condition for DE
+        resampling_fraction :  float
+            Fraction of cells to sample when generating pseudoreplicates
+        n_repetitions : int
+            Number of repetitions when using pseudoreplicates
+        min_list_overlap : float
+            Minimum fraction of repetitions a gene must appear in
+        alpha : float
+            Significance threshold
+        cooks : bool
+            Whether to apply Cook's distance filtering
+        independent_filter : bool
+            Whether to apply independent filtering
+        fit_type :  str
+            Dispersion fit type for DESeq2
+        n_cpus : int
+            Number of CPUs for parallel processing
+        seed : int
+            Random seed
+        verbose : bool
+            Whether to print progress information
         """
-
         self.adata = adata
         self.group_key = group_key
         self.query = query
@@ -72,17 +123,16 @@ class BulkDE:
         self.group_names = group_names
         self.comparison_key_added = comparison_key_added
         self.replicate_key = replicate_key
-        self.pb_replicate_key = pb_replicate_key
-        self.replicate_min_cells = replicate_min_cells
-        self.replicate_min_fraction = replicate_min_fraction
         self.batch_key = batch_key
+        self.sample_min_cells = sample_min_cells
+        self.sample_min_fraction = sample_min_fraction
+        self.min_coverage = min_coverage
         self.min_bridging_batches = min_bridging_batches
-        self.pb_batch_key = pb_batch_key
 
         self.layer = layer
-        self.mode = mode
+        self. mode = mode
 
-        self.min_replicates = min_replicates
+        self.min_samples = min_samples
         self.resampling_fraction = resampling_fraction
         self.n_repetitions = n_repetitions
         self.min_list_overlap = min_list_overlap
@@ -96,12 +146,11 @@ class BulkDE:
         self.n_cpus = n_cpus
         self.verbose = verbose
 
-        # Instantiate random generator
         self.rng = np.random.default_rng(self.seed)
 
-        # Select the cells corresponding to the two conditions
-        self.adata_sub = self._select_conditions(
-            adata=self.adata,
+        # Step 1: Select cells for the two conditions
+        self. adata_sub = self._select_conditions(
+            adata=self. adata,
             group_key=self.group_key,
             query=self.query,
             reference=self.reference,
@@ -109,55 +158,42 @@ class BulkDE:
             comparison_key_added=self.comparison_key_added,
         )
 
-        if self.adata_sub.n_obs == 0:
-            logger.error("Condition selection failed. Exiting initialization.")
-            return
-        
-        # ensure canonical psbulk columns exist and get their names
-        self.adata_sub, self.pb_replicate_key, self.pb_batch_key = self._format_psbulk_columns(
-            adata_sub=self.adata_sub,
-            comparison_key=self.comparison_key_added,
-            replicate_key=self.replicate_key,
-            batch_key=self.batch_key,
-            ps_replicate_key=self.pb_replicate_key,
-            ps_batch_key=self.pb_batch_key
-        )
-    
-        # Identify replicates and batches using the concrete psbulk_replicate_key column
-        self.adata_sub, self.sample_hierarchy, self.replicate_info = self._identify_replicates_and_batches(
-            adata_sub=self.adata_sub,
+        if self. adata_sub is None or self.adata_sub.n_obs == 0:
+            raise ValueError("Condition selection failed.  No cells found.")
+
+        # Step 2: Identify samples and determine design
+        (
+            self.adata_sub,
+            self.sample_hierarchy,
+            self.sample_info,
+            self.design,
+            self.include_batch,
+        ) = self._identify_samples_and_design(
+            adata_sub=self. adata_sub,
             comparison_key=self.comparison_key_added,
             group_names=self.group_names,
-            replicate_key=self.pb_replicate_key,
-            replicate_min_cells=self.replicate_min_cells,
-            replicate_min_fraction=self.replicate_min_fraction,
-            batch_key=self.pb_batch_key,
+            replicate_key=self. replicate_key,
+            batch_key=self.batch_key,
+            min_cells=self.sample_min_cells,
+            min_fraction=self.sample_min_fraction,
+            min_coverage=self.min_coverage,
+            min_bridging_batches=self.min_bridging_batches,
             verbose=self.verbose,
         )
 
-        # Assess batch inclusion
-        self.batch_info = self._include_batch(
-            sample_hierarchy=self.sample_hierarchy,
-            min_bridging_batches=self.min_bridging_batches,
-            group_names=self.group_names)
-        self.batch_as_covariate = self.batch_info["include_batch"]
-
-        # Filter adata_sub to only include cells that belong to valid replicates
-        valid_reps = (
-            self.replicate_info["valid_replicates_by_condition"][self.group_names[0]]
-            + self.replicate_info["valid_replicates_by_condition"][self.group_names[1]]
-        )
-        self.adata_sub = self.adata_sub[self.adata_sub.obs[self.pb_replicate_key].isin(valid_reps)].copy()
-
-        # Generate pseudoreplicates if needed to ensure minimum replicates per condition
-        self.de = self._de(
-            adata_sub=self.adata_sub,
+        # Determine the sample key used for pseudobulking
+        self.sample_key = self. sample_info["sample_key_used"]
+        
+        # Step 3: Run DE analysis
+        self. de = self._run_de(
+            adata_sub=self. adata_sub,
             comparison_key=self.comparison_key_added,
             group_names=self.group_names,
             sample_hierarchy=self.sample_hierarchy,
-            psbulk_replicate_key=self.pb_replicate_key,
-            batch_key=self.pb_batch_key if self.batch_as_covariate else None,
-            min_replicates=self.min_replicates,
+            sample_key=self.sample_key,
+            batch_key=self.batch_key if self.include_batch else None,
+            design=self.design,
+            min_samples=self.min_samples,
             resampling_fraction=self.resampling_fraction,
             rng=self.rng,
             layer=self.layer,
@@ -180,12 +216,13 @@ class BulkDE:
         reference: Union[str, List[str]],
         group_names: Tuple[str, str],
         comparison_key_added: str,
-    ) -> Optional[ad.AnnData]:
-        """Return AnnData subset containing query vs. reference groups."""
-
+    ) -> Optional[ad.AnnData]: 
+        """Return AnnData subset containing query vs.  reference groups."""
+        
         mask_query = adata.obs[group_key] == query
         if mask_query.sum() == 0:
             logger.error(f"No cells found for query group '{query}' in '{group_key}'.")
+            return None
 
         if isinstance(reference, str):
             mask_reference = (
@@ -193,364 +230,300 @@ class BulkDE:
                 else adata.obs[group_key] == reference
             )
         else:
-            mask_reference = adata.obs[group_key].isin(reference)
+            mask_reference = adata.obs[group_key]. isin(reference)
 
         if mask_reference.sum() == 0:
             logger.error(f"No cells found for reference group '{reference}' in '{group_key}'.")
+            return None
 
         mask = mask_query | mask_reference
-        adata_sub = adata[mask].copy()
+        adata_sub = adata[mask]. copy()
 
-        adata_sub.obs.loc[:, comparison_key_added] = np.where(
+        adata_sub.obs[comparison_key_added] = np.where(
             mask_query[mask], group_names[0], group_names[1]
         )
 
         return adata_sub
 
     @staticmethod
-    def _format_psbulk_columns(
+    def _identify_samples_and_design(
         adata_sub: ad.AnnData,
         comparison_key: str,
+        group_names:  Tuple[str, str],
         replicate_key: Optional[str],
         batch_key: Optional[str],
-        ps_replicate_key: str,
-        ps_batch_key: str
-    ) -> Tuple[ad.AnnData, str, str]:
+        min_cells: int,
+        min_fraction: float,
+        min_coverage: float,
+        min_bridging_batches: int,
+        verbose: bool,
+    ) -> Tuple[ad.AnnData, Dict, Dict, str, bool]:
         """
-        Ensure adata_sub.obs contains canonical psbulk columns:
-        - ps_replicate_col (prefix condition + original replicate id, or condition_replicate_1 if None)
-        - ps_batch_col (copy of batch_key if provided, otherwise 'batch_1')
-
+        Identify samples (replicates or batches) and determine design formula. 
+        
+        Logic:
+        - If replicate_key provided:  use as biological replicates, optionally stratify by batch
+        - If only batch_key provided: use batches as technical replicates, check for bridging
+        - If neither:  collapse each condition into single sample
+        
         Returns:
-        - adata_sub (obs modified in place)
-        - name of replicate column written (ps_replicate_col)
-        - name of batch column written (ps_batch_col)
+            adata_sub: Modified AnnData with updated sample assignments
+            sample_hierarchy: {condition -> sample_id -> batch_id -> [obs_names]}
+            info: Dictionary with validation details
+            design: Design formula string
+            include_batch: Whether batch is included in design
         """
-
+        adata_sub = adata_sub.copy()
         obs = adata_sub.obs
 
-        # Create _psbulk_replicate
-        if replicate_key is not None and replicate_key in obs.columns:
-            # Vectorized concat: "Condition_ReplicateID>"
-            obs[ps_replicate_key] = (
-                obs[comparison_key].astype(str).str.cat(obs[replicate_key].astype(str), sep="_")
+        # Determine sample key and whether to stratify by batch
+        if replicate_key is not None: 
+            sample_key = replicate_key
+            stratify_by_batch = batch_key is not None
+            batch_is_sample = False
+        elif batch_key is not None: 
+            sample_key = batch_key
+            stratify_by_batch = False
+            batch_is_sample = True
+        else:
+            sample_key = None
+            stratify_by_batch = False
+            batch_is_sample = False
+
+        # Create internal sample column
+        internal_sample_key = "_de_sample"
+        if sample_key is not None:
+            adata_sub.obs[internal_sample_key] = (
+                obs[comparison_key]. astype(str) + "_" + obs[sample_key].astype(str)
             )
-        else:
-            # No replicate info provided, then collapse to single per-condition replicate id
-            obs[ps_replicate_key] = obs[comparison_key].astype(str) + "_replicate_1"
 
-        # Create _psbulk_batch
-        if batch_key is not None and batch_key in obs.columns:
-            # copy values as-is (no prefix)
-            obs[ps_batch_key] = obs[batch_key].astype(str)
-        else:
-            # Single global batch (all cells same batch)
-            obs[ps_batch_key] = "batch_1"
-
-        # Convert to categorical
-        obs[ps_replicate_key] = obs[ps_replicate_key].astype("category")
-        obs[ps_batch_key] = obs[ps_batch_key].astype("category")
-
-        return adata_sub, ps_replicate_key, ps_batch_key
-
-    @staticmethod
-    def _identify_replicates_and_batches(
-        adata_sub: ad.AnnData,
-        comparison_key: str,
-        group_names: Tuple[str, str],
-        replicate_key: Optional[str],
-        replicate_min_cells: int,
-        replicate_min_fraction: float,
-        batch_key: Optional[str],
-        verbose: bool = False,
-    ) -> Tuple[Optional[Dict], Optional[Dict[str, Any]]]:
-        """
-        Identify "true" biological replicates per condition and return a sample_hierarchy structure:
-            {condition -> replicate -> batch -> [obs_names]}.
-
-        A replicate is considered "true" if it has at least `replicate_min_cells` cells
-        *and* represents at least `replicate_min_fraction` of all cells in its condition.
-        If no replicate in a condition meets these criteria, the entire condition is
-        collapsed into one replicate.
-
-        Batch evaluation is done only on replicates deemed "true". The function simply
-        structures the data; no pseudoreplicates are generated at this stage.
-        """
-
-        # Make a working copy
-        adata_sub = adata_sub.copy()
-
-        # Ensure comparison_key present
-        if comparison_key not in adata_sub.obs.columns:
-            logger.error(f"comparison_key '{comparison_key}' not found in adata.obs")
-            return None, None
-
-        # Compute counts per condition and replicate
-        # The observed=True makes it such that in each group of the comparison_key, only the 
-        # replicates that belong to that group are retained
-        counts = (
-            adata_sub.obs.groupby([comparison_key, replicate_key], observed=True) 
-              .size()
-              .reset_index(name="n_cells")
-        )
-
-        # Condition totals
-        counts["condition_total"] = counts.groupby(comparison_key)["n_cells"].transform("sum")
-        counts["fraction"] = counts["n_cells"] / counts["condition_total"]
-
-        # Determine which replicates can be considered as replicates (should not be too small)
-        # Debatable if logical_and or logical_or is better here
-        mask_true = (counts["n_cells"] >= replicate_min_cells) | (counts["fraction"] >= replicate_min_fraction)
-        counts["considered_as_replicate"] = mask_true
-
-        # Build mapping of true replicates per condition with structure
-        # {condition: [replicate_id, ...], ...}
-        valid_replicates_by_condition = (
-            counts[counts["considered_as_replicate"]]
-            .groupby(comparison_key)[replicate_key]
-            .apply(list)
-            .to_dict()
-        )
-
-        # Now, there might be cases where no replicate in a condition meets the criteria. This might be due to an 
-        # unfortunate choice of thresholds e.g. they don't generalize well in iterative clustering algorithms, where
-        # for very small clusters that are to be compared none of the replicates have enough cells. In these cases,
-        # collapse the entire condition into a single replicate
-        all_conditions = list(group_names)
+        sample_hierarchy = {}
+        valid_samples_by_condition = {}
         collapsed_conditions = []
-        for cond in all_conditions:
-            if cond not in valid_replicates_by_condition.keys():
+
+        for cond in group_names:
+            cond_mask = adata_sub.obs[comparison_key] == cond
+            cond_cells = adata_sub.obs[cond_mask]
+            cond_total = len(cond_cells)
+
+            if sample_key is None:
+                # No sample info - collapse entire condition
+                collapsed_id = f"{cond}_collapsed"
+                sample_hierarchy[cond] = {collapsed_id: {"batch_1": cond_cells.index. tolist()}}
+                valid_samples_by_condition[cond] = [collapsed_id]
                 collapsed_conditions.append(cond)
-                valid_replicates_by_condition[cond] = [f"{cond}_collapsed_rep"]
+                adata_sub. obs. loc[cond_mask, internal_sample_key] = collapsed_id
+                continue
 
-                adata_sub.obs[replicate_key] = np.where(
-                    adata_sub.obs[comparison_key] == cond,
-                    f"{cond}_collapsed_rep",
-                    adata_sub.obs[replicate_key]
-                )
+            # Count cells per sample
+            sample_counts = cond_cells.groupby(internal_sample_key, observed=True).size()
+            sample_fractions = sample_counts / cond_total
 
-        # Build sample_hierarchy structure for ONLY for the replicates that can be considered (including collapsed reps)
-        sample_hierarchy: Dict[str, Dict[str, Dict[str, list]]] = {}
-        for cond in all_conditions:
+            # Identify valid samples
+            valid_mask = (sample_counts >= min_cells) | (sample_fractions >= min_fraction)
+            valid_samples = sample_counts[valid_mask]. index.tolist()
+
+            # Check coverage
+            if valid_samples: 
+                coverage = sample_counts[valid_samples].sum() / cond_total
+                if coverage < min_coverage:
+                    valid_samples = []
+
+            # Collapse if no valid samples
+            if not valid_samples:
+                collapsed_id = f"{cond}_collapsed"
+                valid_samples = [collapsed_id]
+                collapsed_conditions.append(cond)
+                adata_sub.obs.loc[cond_mask, internal_sample_key] = collapsed_id
+                cond_cells = adata_sub.obs[cond_mask]
+
+            valid_samples_by_condition[cond] = valid_samples
+
+            # Build hierarchy for this condition
             sample_hierarchy[cond] = {}
+            for sample_id in valid_samples:
+                sample_cells = cond_cells[cond_cells[internal_sample_key] == sample_id]
 
-            # If this condition was collapsed, take all obs in that condition as that single replicate
-            if cond in collapsed_conditions:
-                collapsed_id = valid_replicates_by_condition[cond][0]  # there is only one
-                cond_cells = adata_sub.obs[adata_sub.obs[comparison_key] == cond]  # get all cells for this condition
-                # Group by batch for that whole condition
-                for batch_val, sub in cond_cells.groupby(batch_key):
-                    # Because I'm iterating over the batch_vals, for the first iteration, the
-                    # dict entry for the collapsed replicate is created using setdefault.
-                    # Here it can never happen that there are no cells
-                    sample_hierarchy[cond].setdefault(collapsed_id, {})[batch_val] = sub.index.tolist()
+                if stratify_by_batch and cond not in collapsed_conditions:
+                    sample_hierarchy[cond][sample_id] = {}
+                    for batch_val, batch_group in sample_cells.groupby(batch_key, observed=True):
+                        if len(batch_group) > 0:
+                            sample_hierarchy[cond][sample_id][batch_val] = batch_group. index.tolist()
+                else:
+                    # When batch_is_sample, store the original batch name for bridging check
+                    if batch_is_sample and cond not in collapsed_conditions: 
+                        # Extract original batch name from internal sample key (remove condition prefix)
+                        original_batch = sample_id.replace(f"{cond}_", "", 1)
+                        sample_hierarchy[cond][sample_id] = {original_batch: sample_cells.index.tolist()}
+                    else:
+                        sample_hierarchy[cond][sample_id] = {"batch_1": sample_cells.index.tolist()}
 
-            else:
-                # iterate through each true replicate and collect its per-batch cells
-                for rep in valid_replicates_by_condition[cond]:
-                    sample_hierarchy[cond].setdefault(rep, {})
-                    # Get cells that belong to this replicate in this condition
-                    rep_cells = adata_sub.obs[(adata_sub.obs[comparison_key] == cond) & (adata_sub.obs[replicate_key] == rep)]
-                    # Group by batch. Here it can happen that in a batch there are no cells
-                    # If this is the case, don't include it
-                    for batch_val, sub in rep_cells.groupby(batch_key):
-                        cell_ids = sub.index.tolist()
-                        if len(cell_ids) > 0:
-                            sample_hierarchy[cond][rep][batch_val] = sub.index.tolist()
+        # Filter adata_sub to only include cells in valid samples
+        all_valid_samples = [s for samples in valid_samples_by_condition.values() for s in samples]
+        adata_sub = adata_sub[adata_sub.obs[internal_sample_key].isin(all_valid_samples)].copy()
 
-        # Prepare info
-        condition_totals = counts.groupby(comparison_key)["n_cells"].sum().to_dict()
+        # Determine if batch should be included in design
+        include_batch = False
+        bridging_batches = []
+
+        # Case 1: replicate_key provided with batch_key (stratify by batch)
+        if stratify_by_batch and batch_key is not None:
+            batches_per_cond = {}
+            for cond in group_names:
+                if cond not in collapsed_conditions:
+                    batches_per_cond[cond] = set(
+                        b for samples in sample_hierarchy[cond].values()
+                        for b in samples. keys()
+                    )
+                else:
+                    batches_per_cond[cond] = set()
+
+            bridging_batches = list(
+                batches_per_cond[group_names[0]] & batches_per_cond[group_names[1]]
+            )
+            include_batch = len(bridging_batches) >= min_bridging_batches
+
+        # Case 2: only batch_key provided (batch IS the sample)
+        elif batch_is_sample and batch_key is not None:
+            # Check bridging:  which original batch names appear in both conditions
+            batches_per_cond = {}
+            for cond in group_names:
+                if cond not in collapsed_conditions:
+                    # Extract batch names from hierarchy (stored as the single key in each sample's dict)
+                    batches_per_cond[cond] = set(
+                        batch_name
+                        for sample_dict in sample_hierarchy[cond]. values()
+                        for batch_name in sample_dict.keys()
+                    )
+                else:
+                    batches_per_cond[cond] = set()
+
+            bridging_batches = list(
+                batches_per_cond[group_names[0]] & batches_per_cond[group_names[1]]
+            )
+            include_batch = len(bridging_batches) >= min_bridging_batches
+
+        # Determine design formula
+        if include_batch:
+            design = f"~{comparison_key}+{batch_key}"
+        else: 
+            design = f"~{comparison_key}"
+
         info = {
-            "valid_replicates_by_condition": valid_replicates_by_condition,
+            "valid_samples_by_condition": valid_samples_by_condition,
             "collapsed_conditions": collapsed_conditions,
-            "replicate_counts_table": counts, 
-            "condition_totals": condition_totals,
-            "used_replicate_key": replicate_key,
-            "used_batch_key": batch_key,
-            "replicate_min_cells": replicate_min_cells,
-            "replicate_min_fraction": replicate_min_fraction,
+            "sample_key_used": internal_sample_key,
+            "original_sample_key": sample_key,
+            "batch_key_used": batch_key if include_batch else None,
+            "bridging_batches": bridging_batches,
+            "is_technical_replicates": batch_is_sample,
         }
 
-        #if verbose:
-        # print(info)
-        # print("Condition totals:", condition_totals)
-        # print("Valid replicates by condition:", valid_replicates_by_condition)
-        # if collapsed_conditions:
-        #     print("Collapsed conditions (no valid replicate found):", collapsed_conditions)
+        if verbose:
+            print(f"Design formula: {design}")
+            print(f"Valid samples: {valid_samples_by_condition}")
+            if collapsed_conditions:
+                print(f"Collapsed conditions: {collapsed_conditions}")
+            if info["is_technical_replicates"]: 
+                print("Note: Using batches as technical replicates")
+            if bridging_batches:
+                print(f"Bridging batches: {bridging_batches}")
 
-        return adata_sub, sample_hierarchy, info
+        return adata_sub, sample_hierarchy, info, design, include_batch
 
-    @staticmethod
-    def _include_batch(
-        sample_hierarchy: dict,
-        min_bridging_batches: int = 2,
-        group_names: Tuple[str, str] = ("query", "reference"),
-    ) -> Dict[str, Any]:
-        """
-        Determine whether 'batch' can be included as a covariate in DE testing.
-
-        Criteria:
-            - At least one batch must be present in both conditions (bridging batch exists).
-            - Only "true" replicates (or collapsed replicates) are considered.
-
-        Returns a dict with the batch inclusion decision and bridging batches.
-        """
-
-        condA, condB = group_names
-
-        sample_hierarchy_a = sample_hierarchy[condA]
-        sample_hierarchy_b = sample_hierarchy[condB]
-
-        batches_a = {b for rep in sample_hierarchy_a.values() for b in rep.keys()}
-        batches_b = {b for rep in sample_hierarchy_b.values() for b in rep.keys()}
-
-        bridging = sorted(batches_a & batches_b)
-        if len(bridging) >= min_bridging_batches:
-            include_batch = True
-        else:
-            include_batch = False
-
-        result = {
-            f"batches_in_{condA}": sorted(batches_a),
-            f"batches_in_{condB}": sorted(batches_b),
-            "include_batch": include_batch,
-            "bridging_batches": bridging
-        }
-
-        #print(result)
-
-        return result
-    
     def _generate_pseudoreplicate(
         self,
-        adata_sub: ad.AnnData,
+        adata_sub: ad. AnnData,
         obs_names: List[str],
-        psbulk_replicate_key: str,
+        sample_key: str,
         batch_key: Optional[str],
         sampling_fraction: float,
-        rng: np.random.default_rng,
+        rng: np.random.Generator,
         layer: str,
-        mode: str
+        mode: str,
     ) -> ad.AnnData:
-        """
-        Generate a single pseudoreplicate by sampling cells from the provided obs_names.
-        """
-
-        n_cells = len(obs_names)
-        n_sample = max(1, int(n_cells * sampling_fraction))
-
+        """Generate a single pseudoreplicate by sampling cells."""
+        n_sample = max(1, int(len(obs_names) * sampling_fraction))
         sampled_cells = rng.choice(obs_names, size=n_sample, replace=False)
         adata_sampled = adata_sub[sampled_cells].copy()
 
         return dc.pp.pseudobulk(
             adata_sampled,
-            sample_col=psbulk_replicate_key,
+            sample_col=sample_key,
             groups_col=batch_key,
             layer=layer,
-            mode=mode
+            mode=mode,
         )
 
-    def _ensure_min_replicates(
+    def _generate_pseudoreplicates(
         self,
         adata_sub: ad.AnnData,
-        sample_hierarchy: dict,
-        psbulk_replicate_key: str,
+        sample_hierarchy: Dict,
+        sample_key: str,
         batch_key: Optional[str],
-        required_reps: dict,
+        required_samples: Dict[str, int],
         resampling_fraction: float,
-        rng: np.random.default_rng,
+        rng: np.random. Generator,
         layer: str,
-        mode: str
+        mode: str,
     ) -> ad.AnnData:
-        """
-        Ensure that each condition has at least `min_replicates` pseudoreplicates by generating additional
-        pseudoreplicates through resampling if necessary.
-        """
+        """Generate additional pseudoreplicates to meet minimum sample requirements."""
         adata_list = []
 
-        for condition, replicates in sample_hierarchy.items():
+        for condition, samples in sample_hierarchy.items():
+            n_needed = required_samples[condition]
+            if n_needed <= 0:
+                continue
 
-            reps_needed = required_reps[condition]
+            sample_ids = list(samples.keys())
 
-            # If batch should be considered
-            if batch_key is not None:
-                
-                for i in range(reps_needed):
-                    # Randomly select a replicate to resample from
-                    rep_id = rng.choice(list(replicates.keys()))
-                    # Randomly select a batch of the replicate (if it exists)
-                    batches = replicates[rep_id]
-                    batch_id = rng.choice(list(batches.keys()))
-                    obs_names = batches[batch_id]
-                    adata_rep = self._generate_pseudoreplicate(
-                        adata_sub,
-                        obs_names,
-                        psbulk_replicate_key,
-                        batch_key,
-                        resampling_fraction,
-                        rng,
-                        layer,
-                        mode
-                    )
-                    # Rename the replicate to indicate it's a pseudoreplicate
-                    new_rep_id = f"{rep_id}_pr_{i+1}"
-                    adata_rep.obs[psbulk_replicate_key] = new_rep_id
-                    # Ensure that the obs name is unique. There is only one because
-                    # one batch has been selected
-                    adata_rep.obs_names = [f"{adata_rep.obs_names.tolist()[0]}_pr_{i+1}"]
-                    adata_list.append(adata_rep)
+            for i in range(n_needed):
+                # Randomly select a sample to resample from
+                source_sample = rng.choice(sample_ids)
+                batches = samples[source_sample]
 
-            # Don't consider batch. Here the I sample from the entire replicate directly
-            else:
+                if batch_key is not None and len(batches) > 1:
+                    # Sample from a random batch within the sample
+                    source_batch = rng.choice(list(batches.keys()))
+                    obs_names = batches[source_batch]
+                else:
+                    # Sample from all cells in the sample
+                    obs_names = [cell for cells in batches.values() for cell in cells]
 
-                # Generate additional pseudoreplicates if needed
-                for i in range(reps_needed):
-                    # Randomly select a replicate to resample from
-                    rep_id = rng.choice(list(replicates.keys()))
-                    obs_names = [cell for batch_cells in replicates[rep_id].values() for cell in batch_cells]
-                    adata_rep = self._generate_pseudoreplicate(
-                        adata_sub,
-                        obs_names,
-                        psbulk_replicate_key,
-                        batch_key,
-                        resampling_fraction,
-                        rng,
-                        layer,
-                        mode
-                    )
-                    # Rename the replicate to indicate it's a pseudoreplicate
-                    new_rep_id = f"{rep_id}_pr_{i+1}"
-                    adata_rep.obs[psbulk_replicate_key] = new_rep_id
-                    # Ensure that the obs name is unique. There is only one because
-                    # one replicate has been selected
-                    adata_rep.obs_names = [f"{adata_rep.obs_names.tolist()[0]}_pr_{i+1}"]
-                    adata_list.append(adata_rep)
+                adata_pr = self._generate_pseudoreplicate(
+                    adata_sub=adata_sub,
+                    obs_names=obs_names,
+                    sample_key=sample_key,
+                    batch_key=batch_key,
+                    sampling_fraction=resampling_fraction,
+                    rng=rng,
+                    layer=layer,
+                    mode=mode,
+                )
 
-        # Concatenate all pseudoreplicates into a single AnnData
-        adata_pr = ad.concat(adata_list, axis=0)
+                # Rename to indicate pseudoreplicate
+                new_sample_id = f"{source_sample}_pr_{i+1}"
+                adata_pr.obs[sample_key] = new_sample_id
+                adata_pr. obs_names = [f"{idx}_pr_{i+1}" for idx in adata_pr.obs_names]
+                adata_list.append(adata_pr)
 
-        return adata_pr
-    
+        return ad.concat(adata_list, axis=0) if adata_list else None
+
     def _pydeseq2_wrapper(
-            self,
-            counts: pd.DataFrame, # pb x genes
-            metadata: pd.DataFrame, # pb x covariates
-            design: str,
-            contrast: list,
-            alpha: float,
-            cooks: bool,
-            fit_type: str,
-            independent_filter: bool,
-            n_cpus,
-            verbose: bool,
-            ) -> DeseqStats:
-        """
-        Wrapper around pydeseq2 DE testing.
-        """
-
-        inference = DefaultInference(
-            n_cpus=n_cpus,
-        )
+        self,
+        counts: pd.DataFrame,
+        metadata: pd.DataFrame,
+        design: str,
+        contrast: List[str],
+        alpha: float,
+        cooks:  bool,
+        fit_type:  str,
+        independent_filter:  bool,
+        n_cpus: int,
+        verbose:  bool,
+    ) -> pd.DataFrame:
+        """Run PyDESeq2 differential expression analysis."""
+        inference = DefaultInference(n_cpus=n_cpus)
 
         dds = DeseqDataSet(
             counts=counts,
@@ -562,7 +535,7 @@ class BulkDE:
             quiet=not verbose,
         )
 
-        dds.fit_size_factors()
+        dds. fit_size_factors()
         dds.fit_genewise_dispersions()
         dds.fit_dispersion_trend()
         dds.fit_dispersion_prior()
@@ -577,128 +550,107 @@ class BulkDE:
             alpha=alpha,
             cooks_filter=cooks,
             independent_filter=independent_filter,
-            quiet=True, # otherwise it prints the summary table
-            n_cpus=n_cpus
+            quiet=True,
+            n_cpus=n_cpus,
         )
 
         ds.run_wald_test()
         ds._cooks_filtering()
         ds._p_value_adjustment()
-        ds.summary()
+        ds. summary()
 
-        df = ds.results_df.copy()
+        return ds.results_df. copy()
 
-        return df
-    
     @staticmethod
     def _aggregate_de_results(
-        results: dict[str, pd.DataFrame],
+        results: Dict[str, pd.DataFrame],
         min_list_overlap: float,
     ) -> pd.DataFrame:
-        """
-        Aggregate DE results across repetitions.
-        Keeps genes appearing in at least min_list_overlap fraction of runs
-        and averages numeric columns.
-        """
+        """Aggregate DE results across repetitions."""
         n_runs = len(results)
+        min_occurrences = int(np.ceil(min_list_overlap * n_runs))
 
+        # Count gene occurrences across runs
         gene_counts = (
-            pd.concat(
-                [df.assign(_run=k) for k, df in results.items()],
-                axis=0
-            )
-            .reset_index()
+            pd.concat([df.reset_index() for df in results.values()])
             .groupby("index")
             .size()
         )
-
-        min_occurrences = int(np.ceil(min_list_overlap * n_runs))
         keep_genes = gene_counts[gene_counts >= min_occurrences].index
 
-        all_results = pd.concat(results.values(), axis=0)
-        all_results = all_results.loc[keep_genes]
+        # Average results for kept genes
+        all_results = pd.concat(results.values())
+        all_results = all_results. loc[all_results.index.isin(keep_genes)]
 
-        aggregated = (
-            all_results
-            .groupby(all_results.index)
-            .mean(numeric_only=True)
-        )
+        return all_results.groupby(all_results.index).mean(numeric_only=True)
 
-        #aggregated['is_de'] = aggregated['is_de'].astype(bool)
-
-        return aggregated
-
-    def _de(
-            self,
-            adata_sub: ad.AnnData,
-            comparison_key: str, 
-            group_names: Tuple[str, str],
-            sample_hierarchy: dict,
-            psbulk_replicate_key: str,
-            batch_key: Optional[str],
-            min_replicates: int,
-            resampling_fraction: float,
-            rng: np.random.default_rng,
-            layer: str,
-            mode: str,
-            alpha: float,
-            cooks: bool,
-            fit_type: str,
-            independent_filter: bool,
-            n_repetitions: int,
-            min_list_overlap: float,
-            n_cpus: int,
-            verbose: bool,
-            ):
-        # For the replicates that can be considered, generate a pseudobulk
-        # If the batch key is not none, the replicates will be stratified by batch
+    def _run_de(
+        self,
+        adata_sub: ad.AnnData,
+        comparison_key: str,
+        group_names: Tuple[str, str],
+        sample_hierarchy: Dict,
+        sample_key: str,
+        batch_key: Optional[str],
+        design: str,
+        min_samples: int,
+        resampling_fraction: float,
+        rng: np.random.Generator,
+        layer: str,
+        mode: str,
+        alpha: float,
+        cooks:  bool,
+        fit_type:  str,
+        independent_filter:  bool,
+        n_repetitions: int,
+        min_list_overlap: float,
+        n_cpus: int,
+        verbose: bool,
+    ) -> pd.DataFrame:
+        """Run differential expression analysis with optional pseudoreplicate generation."""
+        
+        # Generate pseudobulk
         adata_pb = dc.pp.pseudobulk(
             adata_sub,
-            sample_col=psbulk_replicate_key,
+            sample_col=sample_key,
             groups_col=batch_key,
             layer=layer,
-            mode=mode
+            mode=mode,
         )
         adata_pb = adata_pb[
-            (adata_pb.obs["psbulk_cells"] > 0)
-            & (adata_pb.obs["psbulk_counts"] > 0)
+            (adata_pb.obs["psbulk_cells"] > 0) & (adata_pb.obs["psbulk_counts"] > 0)
         ].copy()
 
-        # Determine how may replicates are needed to reach min_replicates per condition
-        # If batch is considered, a replicate can be spread across multiple batches
-        required_reps = {}
+        if verbose:
+            print(f"Pseudobulk samples: {adata_pb.n_obs}")
+
+        # Determine how many additional samples are needed per condition
+        required_samples = {}
         for group in group_names:
-            reps_dict = sample_hierarchy[group]
-            if batch_key is not None:
-                # count number of (replicate, batch) pairs for this condition
-                current_reps = sum(
-                    len(batches) for batches in reps_dict.values()
-                )
+            if batch_key is not None: 
+                # Count (sample, batch) pairs
+                current = sum(len(batches) for batches in sample_hierarchy[group].values())
             else:
-                # count number of replicates (regardless of how many batches each has)
-                current_reps = len(reps_dict)
-            required_reps[group] = max(0, min_replicates - current_reps)
+                current = len(sample_hierarchy[group])
+            required_samples[group] = max(0, min_samples - current)
 
-        # Separately determine the design formula:
-        if batch_key is not None:
-            design = f"~{comparison_key}+{batch_key}"
-        else:
-            design = f"~{comparison_key}"
+        if verbose:
+            print(f"Additional samples needed: {required_samples}")
 
-        # If there are enough replicates in both groups, go to DE immediately:
-        if all(v == 0 for v in required_reps.values()):
-            adata_test = adata_pb.copy()
+        # Prepare contrast
+        contrast = [comparison_key, group_names[0], group_names[1]]
+        metadata_cols = [comparison_key] + ([batch_key] if batch_key else [])
+
+        # If enough samples, run DE directly
+        if all(v == 0 for v in required_samples.values()):
             counts = pd.DataFrame(
-                adata_test.X,
-                columns=adata_test.var_names,
-                index=adata_test.obs_names
-                )
-            metadata = pd.DataFrame(
-                adata_test.obs[[comparison_key] + ([batch_key] if batch_key is not None else [])],
-                index=adata_test.obs_names
+                adata_pb.X,
+                columns=adata_pb.var_names,
+                index=adata_pb.obs_names,
             )
-            contrast = [comparison_key, group_names[0], group_names[1]]
-            ds_results = self._pydeseq2_wrapper(
+            metadata = adata_pb.obs[metadata_cols]. copy()
+
+            return self._pydeseq2_wrapper(
                 counts=counts,
                 metadata=metadata,
                 design=design,
@@ -710,52 +662,48 @@ class BulkDE:
                 n_cpus=n_cpus,
                 verbose=verbose,
             )
-            return ds_results
-        
-        # Else generate pseudoreplicates
-        else:
-            results = {}
-            for i in range(n_repetitions):
-                adata_pr = self._ensure_min_replicates(
-                    adata_sub=adata_sub,
-                    sample_hierarchy=sample_hierarchy,
-                    psbulk_replicate_key=psbulk_replicate_key,
-                    batch_key=batch_key,
-                    required_reps=required_reps,
-                    resampling_fraction=resampling_fraction,
-                    rng=rng,
-                    layer=layer,
-                    mode=mode
-                )
-                adata_test = ad.concat([adata_pb, adata_pr], axis=0)
-                counts = pd.DataFrame(
-                    adata_test.X,
-                    columns=adata_test.var_names,
-                    index=adata_test.obs_names
-                    )
-                metadata = pd.DataFrame(
-                    adata_test.obs[[comparison_key] + ([batch_key] if batch_key is not None else [])],
-                    index=adata_test.obs_names
-                )
-                contrast = [comparison_key, group_names[0], group_names[1]]
-                ds_results = self._pydeseq2_wrapper(
-                    counts=counts,
-                    metadata=metadata,
-                    design=design,
-                    contrast=contrast,
-                    alpha=alpha,
-                    cooks=cooks,
-                    fit_type=fit_type,
-                    independent_filter=independent_filter,
-                    n_cpus=n_cpus,
-                    verbose=verbose,
-                )
-                results[str(i)] = ds_results
 
-            return self._aggregate_de_results(
-                results=results,
-                min_list_overlap=min_list_overlap
+        # Otherwise, run with pseudoreplicates
+        results = {}
+        for i in range(n_repetitions):
+            adata_pr = self._generate_pseudoreplicates(
+                adata_sub=adata_sub,
+                sample_hierarchy=sample_hierarchy,
+                sample_key=sample_key,
+                batch_key=batch_key,
+                required_samples=required_samples,
+                resampling_fraction=resampling_fraction,
+                rng=rng,
+                layer=layer,
+                mode=mode,
             )
+
+            if adata_pr is not None: 
+                adata_test = ad.concat([adata_pb, adata_pr], axis=0)
+            else:
+                adata_test = adata_pb
+
+            counts = pd.DataFrame(
+                adata_test.X,
+                columns=adata_test.var_names,
+                index=adata_test.obs_names,
+            )
+            metadata = adata_test.obs[metadata_cols].copy()
+
+            results[str(i)] = self._pydeseq2_wrapper(
+                counts=counts,
+                metadata=metadata,
+                design=design,
+                contrast=contrast,
+                alpha=alpha,
+                cooks=cooks,
+                fit_type=fit_type,
+                independent_filter=independent_filter,
+                n_cpus=n_cpus,
+                verbose=False,
+            )
+
+        return self._aggregate_de_results(results=results, min_list_overlap=min_list_overlap)
         
 def de_pairs_pseudobulk(
         adata_norm: ad.AnnData,
@@ -778,6 +726,8 @@ def de_pairs_pseudobulk(
 
         adata = adata_norm[idx].copy()
         adata.obs['cluster_id'] = np.where(np.isin(idx, idx_a), 'cluster_a', 'cluster_b')
+
+        print(de_kwargs)
 
         de = BulkDE(
             adata=adata,
