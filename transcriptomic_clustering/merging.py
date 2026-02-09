@@ -531,7 +531,7 @@ def merge_clusters_by_de(
             score = row.score
 
             # Merge if score < th or number of de genes < min)
-            if score >= score_th and row.num > min_genes:
+            if score >= score_th and row.num >= min_genes:
                 break
 
             dst_label, src_label = pair
